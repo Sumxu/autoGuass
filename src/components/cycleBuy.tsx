@@ -9,28 +9,26 @@ interface CycleBuyProps {
   redeemChange: (data: any) => void;
 }
 
-const CycleBuy: React.FC<CycleBuyProps> = ({ onDataChange ,redeemChange}) => {
+const CycleBuy: React.FC<CycleBuyProps> = ({ onDataChange, redeemChange }) => {
   const provider = new ethers.JsonRpcProvider(
-    "https://bsc.blockrazor.xyz/1915635065170173952",
-    56
+    "https://rpc.juchain.org",
+    210000
   );
 
   const abi = [
-    "function deposit(uint256 pid,uint256 amount,uint256 swapAmountOut,address inviter) external",
+    "function bind(address _inviter) external",
+    "function deposit(uint256 pid,uint256 amount) external payable",
     "function maxStakeAmount() public view returns (uint256)",
     "function withdraw(uint256 stakeId) external",
     "function userIdsLength(address _user) external view returns (uint256)",
-    "function userInfo(address) external view returns (address inviter,uint8 vip,uint256 teamValue)",
+    "function userInfo(address) external view returns (address inviter,uint256 vip,uint256 validDirect,uint256 teamPerf,uint256 mintageQuota,uint256 totalTeamReward)",
     "function getAmountsJuIn(uint256 usdtAmount) public view returns(uint256)",
-    "function stakeInfo(uint256) external view returns(address owner,bool hasWithdraw,uint256 pid,uint256 amount,uint256 startTime,uint256 endTime)",
   ];
-
   const erc20ABI = [
     "function approve(address,uint256) external",
     "function balanceOf(address) external view returns (uint256)",
     "function allowance(address,address) external view returns (uint256)",
   ];
-
   const stakeAddress = "0x7C215a653e0f7B2F58e1C3974a31ded9c5bD0d83"; //合约地址
   const USDTAddress = "0x55d398326f99059fF775485246999027B3197955";
   const runningRef = React.useRef(false);
@@ -58,7 +56,7 @@ const CycleBuy: React.FC<CycleBuyProps> = ({ onDataChange ,redeemChange}) => {
   };
   // 更新钱包
   const updateWallet = (index: number, value: string) => {
-    console.log("value==",value)
+    console.log("value==", value);
     try {
       // 1️⃣ 校验私钥（非法直接跳出）
       // 3️⃣ 更新私钥列表
@@ -67,7 +65,6 @@ const CycleBuy: React.FC<CycleBuyProps> = ({ onDataChange ,redeemChange}) => {
         next[index] = value;
         return next;
       });
-
     } catch {
       // 私钥非法，什么都不做 or 给提示
       return Toast.show("请粘贴正确的私钥");
@@ -106,6 +103,18 @@ const CycleBuy: React.FC<CycleBuyProps> = ({ onDataChange ,redeemChange}) => {
 
     appendLog("🛑 已停止抢购");
   };
+  async function bind(nextId) {
+    const wallet = new ethers.Wallet(configObject.wallets[nextId], provider);
+    const contract = new ethers.Contract(stakeAddress, abi, wallet);
+    const userInfoData = await contract.userInfo(wallet.address);
+    console.log("userInfoData==",userInfoData)
+    if (userInfoData[0] === "0x0000000000000000000000000000000000000000") {
+      const tx = await contract.bind(configObject.initInviter);
+      await tx.wait();
+      console.log("授权成功", wallet.address);
+    }
+  }
+
   async function checkAndApprove(privateKey) {
     const wallet = new ethers.Wallet(privateKey, provider);
     const contract = new ethers.Contract(USDTAddress, erc20ABI, wallet);
@@ -129,32 +138,48 @@ const CycleBuy: React.FC<CycleBuyProps> = ({ onDataChange ,redeemChange}) => {
     if (nextId >= configObject.wallets.length) {
       nextId = 0;
     }
+    const wallet = new ethers.Wallet(configObject.wallets[nextId], provider);
+    const contract = new ethers.Contract(stakeAddress, abi, wallet);
     try {
-      const wallet = new ethers.Wallet(configObject.wallets[nextId], provider);
-      const contract = new ethers.Contract(stakeAddress, abi, wallet);
-
       let maxStakeAmount = await contract.maxStakeAmount();
-
       if (!runningRef.current) return;
-
       if (maxStakeAmount > configObject.maxAmount) {
         maxStakeAmount = configObject.maxAmount;
       }
 
       if (maxStakeAmount > configObject.minAmount) {
-      
-        const depositAmount=(Math.random()*(configObject.maxAmount>maxStakeAmount?maxStakeAmount:configObject.maxAmount-configObject.minAmount)+configObject.minAmount).toFixed(0);
-        console.log("depositAmount==",depositAmount)
-          
-        appendLog("抢购中", wallet.address, depositAmount);
-        const tx = await contract.deposit(
-          configObject.days,
-          ethers.parseEther(depositAmount),
-          0,
-          configObject.initInviter
+        const depositAmount = (
+          Math.random() *
+            (configObject.maxAmount > maxStakeAmount
+              ? maxStakeAmount
+              : configObject.maxAmount - configObject.minAmount) +
+          configObject.minAmount
+        ).toFixed(0);
+        const walletBalance = await provider.getBalance(wallet.address);
+        const amountsJuIn = await contract.getAmountsJuIn(
+          ethers.parseEther(depositAmount)
         );
-        await tx.wait();
-        appendLog("✅ 抢购成功", wallet.address);
+        console.log("depositAmount==", depositAmount);
+        console.log("walletBalance==", walletBalance);
+        console.log("amountsJuIn==", amountsJuIn);
+        if (walletBalance > amountsJuIn) {
+          appendLog("抢购中", wallet.address, depositAmount);
+          const tx = await contract.deposit(
+            configObject.days,
+            ethers.parseEther(depositAmount),
+            0,
+            configObject.initInviter
+          );
+          await tx.wait();
+          appendLog("✅ 抢购成功", wallet.address);
+        } else {
+          appendLog(
+            "WARN 钱包地址余额不足:  钱包: %s 余额: %s 需要JU: %s",
+            wallet.address,
+            walletBalance,
+            amountsJuIn
+          );
+        }
         nextId++;
       }
     } catch (e) {
@@ -174,13 +199,12 @@ const CycleBuy: React.FC<CycleBuyProps> = ({ onDataChange ,redeemChange}) => {
       cycleBuy(nextId);
     }, delay);
   }
-
   async function startup() {
-    appendLog("Startup   地址绑定检查开始");
+    appendLog("Startup 地址绑定检查开始");
     for (let i = 0; i < configObject.wallets.length; i++) {
-      await checkAndApprove(configObject.wallets[i]);
+      await bind(i);
     }
-    appendLog("Startup地址绑定检查结束");
+    appendLog("Startup   地址绑定检查结束");
     cycleBuy(0);
   }
   useEffect(() => {
@@ -286,7 +310,7 @@ const CycleBuy: React.FC<CycleBuyProps> = ({ onDataChange ,redeemChange}) => {
             停止抢购
           </Button>
 
-           <Button
+          <Button
             color="success"
             className="fixedBottomBtn"
             onClick={redeemChange}
@@ -294,7 +318,6 @@ const CycleBuy: React.FC<CycleBuyProps> = ({ onDataChange ,redeemChange}) => {
           >
             开始赎回
           </Button>
-
         </div>
       </div>
       <h3>私钥运行日志</h3>
